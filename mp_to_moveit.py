@@ -37,8 +37,8 @@ class CranePoseController(Node):
         self.camera_thread = threading.Thread(target=self.camera_loop, daemon=True)
         self.camera_thread.start()
 
-        # MoveIt送信は2秒ごと
-        self.timer = self.create_timer(2.0, self.timer_callback)
+        # 2.0 → 0.1に変更
+        self.timer = self.create_timer(0.1, self.timer_callback)
         self.get_logger().info("✅ 準備完了")
 
     def camera_loop(self):
@@ -140,7 +140,7 @@ class CranePoseController(Node):
         self.is_moving = False
 
     def timer_callback(self):
-        if self.is_moving:
+        if self.is_moving:  # フラグチェック
             return
 
         with self.frame_lock:
@@ -154,33 +154,31 @@ class CranePoseController(Node):
 
         lm = results.pose_landmarks.landmark
         h, w, _ = frame.shape
-
-        # 右手首・左手首どちらか見えている方を使う
         right_wrist = lm[16]
         left_wrist = lm[15]
+        wrist = right_wrist if right_wrist.visibility >= left_wrist.visibility else left_wrist
 
-        if right_wrist.visibility >= left_wrist.visibility:
-            wrist = right_wrist
-        else:
-            wrist = left_wrist
+        if wrist.visibility < 0.3:
+            return
 
         cx = wrist.x * w
         cy = wrist.y * h
-
-        if wrist.visibility < 0.3:  # 0.5→0.3に緩める
-            self.get_logger().info("手首が見えていません")
-            return
-
         rx, ry, rz = self.camera_to_robot(cx, cy)
         current_pos = np.array([rx, ry, rz])
 
         if self.last_pos is not None:
-            if np.linalg.norm(current_pos - np.array(self.last_pos)) < 0.01:  # 5cm→1cmに
+            if np.linalg.norm(current_pos - np.array(self.last_pos)) < 0.01:
                 return
 
         self.last_pos = (rx, ry, rz)
-        self.get_logger().info(f"手首 cam=({cx:.0f},{cy:.0f}) → robot=({rx:.3f},{ry:.3f},{rz:.3f})")
-        self.move_to_pose(rx, ry, rz)
+        self.is_moving = True  # ← スレッド起動前にフラグを立てる
+
+        self.get_logger().info(f"🎯 move_to_pose 呼ぶ: robot=({rx:.3f},{ry:.3f},{rz:.3f})")
+        threading.Thread(
+            target=self.move_to_pose,
+            args=(rx, ry, rz),
+            daemon=True
+        ).start()
 
 def main():
     rclpy.init()
