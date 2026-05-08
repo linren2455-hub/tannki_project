@@ -84,11 +84,17 @@ class CraneController(CraneDriver):
                 break
 
     def move_task(self, rx, ry, rz):
-        """IK計算→trajectory送信（上書き方式）"""
+        t0 = time.time()
         joint_positions = self.solve_ik(rx, ry, rz)
+        t1 = time.time()
+
         if joint_positions:
-            # move_timeを長めに設定（次の指令が来たら上書きされる）
-            self.send_trajectory(joint_positions[:7], move_time=2.0)
+            self.send_trajectory(joint_positions[:7], move_time=0.5)
+            t2 = time.time()
+            self.get_logger().info(
+                f"[IK:{(t1-t0)*1000:.1f}ms 送信:{(t2-t1)*1000:.1f}ms "
+                f"合計:{(t2-t0)*1000:.1f}ms]"
+            )
         else:
             self.get_logger().warn("IK解なし")
         self.is_moving = False  # すぐにFalseにして次の指令を受け付ける
@@ -140,15 +146,18 @@ class CraneController(CraneDriver):
                 self.phase = "control"
             return
 
-        # ③ 制御フェーズ（MediaPipeの結果をそのまま使う）
+        # ③ 制御フェーズ
         if self.phase == "control":
             if self.is_moving:
                 return
+
+            t0 = time.time()
 
             rx, ry, rz = camera_to_robot(
                 rel_x, rel_z, self.rel_x_max, self.rel_z_max)
             self.pos_history, averaged = get_averaged_pos(
                 self.pos_history, rx, ry, rz, n=self.N_AVERAGE)
+            t1 = time.time()
 
             if averaged is None:
                 return
@@ -157,13 +166,15 @@ class CraneController(CraneDriver):
             import numpy as np
             current_pos = np.array([rx, ry, rz])
             if self.last_pos is not None:
-                if np.linalg.norm(current_pos - np.array(self.last_pos)) < 0.02:
+                if np.linalg.norm(current_pos - np.array(self.last_pos)) < 0.05:
                     return
 
             self.last_pos = (rx, ry, rz)
             self.is_moving = True
+
             self.get_logger().info(
-                f"rel=({rel_x:.0f},{rel_z:.0f}) → robot x={rx:.3f} z={rz:.3f}")
+                f"[変換+平均:{(t1-t0)*1000:.1f}ms] "
+                f"目標: x={rx:.3f} z={rz:.3f}")
 
             threading.Thread(
                 target=self.move_task,
